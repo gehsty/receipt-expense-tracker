@@ -8,6 +8,7 @@ import os
 from datetime import datetime, date
 import json
 import traceback
+import base64
 
 # Configure the page
 st.set_page_config(
@@ -29,18 +30,39 @@ def init_database():
     """Initialize SQLite database"""
     conn = sqlite3.connect('expenses.db')
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            merchant TEXT,
-            date DATE,
-            total REAL,
-            category TEXT,
-            items TEXT,
-            receipt_filename TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    
+    # Check if we need to migrate the existing table
+    cursor.execute("PRAGMA table_info(expenses)")
+    columns = [column[1] for column in cursor.fetchall()]
+    
+    if not columns:
+        # Create new table with updated schema
+        cursor.execute('''
+            CREATE TABLE expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                merchant TEXT,
+                date DATE,
+                total REAL,
+                currency TEXT DEFAULT 'USD',
+                category TEXT,
+                description TEXT,
+                receipt_image BLOB,
+                receipt_filename TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+    else:
+        # Add new columns if they don't exist (for existing databases)
+        if 'currency' not in columns:
+            cursor.execute('ALTER TABLE expenses ADD COLUMN currency TEXT DEFAULT "USD"')
+        if 'description' not in columns:
+            cursor.execute('ALTER TABLE expenses ADD COLUMN description TEXT')
+        if 'receipt_image' not in columns:
+            cursor.execute('ALTER TABLE expenses ADD COLUMN receipt_image BLOB')
+        # Rename items to description if items exists
+        if 'items' in columns and 'description' not in columns:
+            cursor.execute('ALTER TABLE expenses RENAME COLUMN items TO description')
+    
     conn.commit()
     conn.close()
 
@@ -81,16 +103,24 @@ def process_receipt_with_gemini(image_bytes):
             "merchant": "store/restaurant name",
             "date": "YYYY-MM-DD format",
             "total": "numerical value only (e.g., 25.99)",
+            "currency": "three-letter currency code (e.g., USD, GBP, EUR, DKK)",
             "category": "one of: Food & Dining, Transportation, Shopping, Entertainment, Healthcare, Utilities, Other",
-            "items": "comma-separated list of main items purchased"
+            "description": "descriptive summary of the expense"
         }
         
         Instructions:
         - For merchant, extract the business name clearly shown on the receipt
         - For date, convert to YYYY-MM-DD format
         - For total, extract the final amount paid (not subtotal)
+        - For currency, identify the currency from symbols (£=GBP, €=EUR, $=USD, kr=DKK, etc.) or text
         - For category, choose the most appropriate category based on the merchant/items
-        - For items, list the main products/services, keep it concise
+        - For description, create a natural summary like:
+          * "Evening meal at [restaurant name]" for restaurants
+          * "Stay at [hotel name] for [X] nights" for hotels
+          * "Grocery shopping at [store name]" for supermarkets
+          * "Fuel purchase at [station name]" for gas stations
+          * "Flight ticket from [origin] to [destination]" for airlines
+          * "Taxi ride in [city]" for transportation
         - Return only valid JSON, no additional text
         """
         
@@ -113,8 +143,9 @@ def process_receipt_with_gemini(image_bytes):
                 'merchant': str(data.get('merchant', '')).strip(),
                 'date': str(data.get('date', str(date.today()))),
                 'total': float(data.get('total', 0.0)),
+                'currency': str(data.get('currency', 'USD')).strip().upper(),
                 'category': str(data.get('category', 'Other')),
-                'items': str(data.get('items', '')).strip()
+                'description': str(data.get('description', '')).strip()
             }
             
             return cleaned_data, None
@@ -125,21 +156,23 @@ def process_receipt_with_gemini(image_bytes):
     except Exception as e:
         return None, f"Error processing receipt: {str(e)}"
 
-def save_expense_to_db(expense_data, filename):
+def save_expense_to_db(expense_data, filename, image_data=None):
     """Save expense to SQLite database"""
     try:
         conn = sqlite3.connect('expenses.db')
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO expenses (merchant, date, total, category, items, receipt_filename)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO expenses (merchant, date, total, currency, category, description, receipt_image, receipt_filename)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             expense_data['merchant'],
             expense_data['date'],
             expense_data['total'],
+            expense_data['currency'],
             expense_data['category'],
-            expense_data['items'],
+            expense_data['description'],
+            image_data,
             filename
         ))
         
@@ -154,7 +187,7 @@ def load_expenses_from_db():
     try:
         conn = sqlite3.connect('expenses.db')
         df = pd.read_sql_query('''
-            SELECT id, merchant, date, total, category, items, receipt_filename, created_at
+            SELECT id, merchant, date, total, currency, category, description, receipt_filename, created_at
             FROM expenses
             ORDER BY date DESC, created_at DESC
         ''', conn)
@@ -280,13 +313,23 @@ with col2:
                   if default_data.get('date') else date.today()
         )
         
-        total = st.number_input(
-            "Total Amount",
-            min_value=0.0,
-            value=float(default_data.get('total', 0.0)),
-            step=0.01,
-            format="%.2f"
-        )
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            total = st.number_input(
+                "Total Amount",
+                min_value=0.0,
+                value=float(default_data.get('total', 0.0)),
+                step=0.01,
+                format="%.2f"
+            )
+        with col2:
+            currency = st.selectbox(
+                "Currency",
+                ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'],
+                index=['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'].index(
+                    default_data.get('currency', 'USD')
+                ) if default_data.get('currency') in ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'] else 0
+            )
         
         category = st.selectbox(
             "Category",
@@ -296,10 +339,10 @@ with col2:
             ) if default_data.get('category') in ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'] else 6
         )
         
-        items = st.text_area(
-            "Items",
-            value=default_data.get('items', ''),
-            placeholder="List of items purchased (comma-separated)"
+        description = st.text_area(
+            "Description",
+            value=default_data.get('description', ''),
+            placeholder="Descriptive summary of the expense (e.g., 'Evening meal at Restaurant Name')"
         )
         
         # Submit button
@@ -311,14 +354,21 @@ with col2:
                     'merchant': merchant,
                     'date': str(expense_date),
                     'total': total,
+                    'currency': currency,
                     'category': category,
-                    'items': items
+                    'description': description
                 }
+                
+                # Convert image to bytes if uploaded
+                image_data = None
+                if uploaded_file:
+                    image_data = uploaded_file.getvalue()
                 
                 # Save to database
                 success, message = save_expense_to_db(
                     expense_data, 
-                    uploaded_file.name if uploaded_file else "manual_entry"
+                    uploaded_file.name if uploaded_file else "manual_entry",
+                    image_data
                 )
                 
                 if success:
@@ -363,8 +413,13 @@ if not expenses_df.empty:
             st.metric("Average Amount", f"${filtered_df['total'].mean():.2f}")
         
         # Display table
-        display_df = filtered_df[['merchant', 'date', 'total', 'category', 'items']].copy()
-        display_df['total'] = display_df['total'].apply(lambda x: f"${x:.2f}")
+        display_df = filtered_df[['merchant', 'date', 'total', 'currency', 'category', 'description']].copy()
+        # Format the total with currency
+        display_df['amount'] = display_df.apply(
+            lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
+        )
+        # Select columns for display
+        display_df = display_df[['merchant', 'date', 'amount', 'category', 'description']]
         
         # Use st.dataframe with selection
         selected_rows = st.dataframe(

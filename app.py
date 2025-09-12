@@ -240,7 +240,7 @@ with col1:
     if uploaded_file is not None:
         # Display uploaded image
         image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Receipt", use_column_width=True)
+        st.image(image, caption="Uploaded Receipt", use_container_width=True)
         
         # Process button
         if st.button("🤖 Extract Data", type="primary"):

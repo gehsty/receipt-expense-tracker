@@ -313,30 +313,32 @@ with col2:
                   if default_data.get('date') else date.today()
         )
         
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            total = st.number_input(
-                "Total Amount",
-                min_value=0.0,
-                value=float(default_data.get('total', 0.0)),
-                step=0.01,
-                format="%.2f"
+        total = st.number_input(
+            "Total Amount",
+            min_value=0.0,
+            value=float(default_data.get('total', 0.0)),
+            step=0.01,
+            format="%.2f"
+        )
+        
+        currency = st.selectbox(
+            "Currency",
+            ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'],
+            index=0 if not default_data.get('currency') else (
+                ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'].index(default_data.get('currency'))
+                if default_data.get('currency') in ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF']
+                else 0
             )
-        with col2:
-            currency = st.selectbox(
-                "Currency",
-                ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'],
-                index=['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'].index(
-                    default_data.get('currency', 'USD')
-                ) if default_data.get('currency') in ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'] else 0
-            )
+        )
+        
+        categories = ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other']
+        default_category = default_data.get('category', 'Other')
+        category_index = categories.index(default_category) if default_category in categories else 6
         
         category = st.selectbox(
             "Category",
-            ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'],
-            index=['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'].index(
-                default_data.get('category', 'Other')
-            ) if default_data.get('category') in ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'] else 6
+            categories,
+            index=category_index
         )
         
         description = st.text_area(

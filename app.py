@@ -308,38 +308,58 @@ with col2:
             key="merchant_input"
         )
         
+        # Handle date extraction properly
+        default_date = date.today()
+        if default_data.get('date'):
+            try:
+                default_date = datetime.strptime(default_data.get('date'), '%Y-%m-%d').date()
+            except:
+                default_date = date.today()
+                
         expense_date = st.date_input(
             "Date",
-            value=date.today(),
+            value=default_date,
             key="date_input"
         )
         
         total = st.number_input(
             "Total Amount",
             min_value=0.0,
-            value=0.0,
+            value=float(default_data.get('total', 0.0)),
             step=0.01,
             format="%.2f",
             key="total_input"
         )
         
+        # Handle currency extraction properly
+        currencies = ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF']
+        default_currency_index = 0
+        if default_data.get('currency') and default_data.get('currency') in currencies:
+            default_currency_index = currencies.index(default_data.get('currency'))
+            
         currency = st.selectbox(
             "Currency",
-            ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'],
-            index=0,
+            currencies,
+            index=default_currency_index,
             key="currency_input"
         )
         
+        # Handle category extraction properly
+        categories = ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other']
+        default_category_index = 6  # Default to "Other"
+        if default_data.get('category') and default_data.get('category') in categories:
+            default_category_index = categories.index(default_data.get('category'))
+            
         category = st.selectbox(
             "Category",
-            ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'],
-            index=6,
+            categories,
+            index=default_category_index,
             key="category_input"
         )
         
         description = st.text_area(
             "Description",
-            value="",
+            value=default_data.get('description', ''),
             placeholder="Descriptive summary of the expense (e.g., 'Evening meal at Restaurant Name')",
             key="description_input"
         )

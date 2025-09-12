@@ -421,26 +421,36 @@ if not expenses_df.empty:
         # Select columns for display
         display_df = display_df[['merchant', 'date', 'amount', 'category', 'description']]
         
-        # Use st.dataframe with selection
-        selected_rows = st.dataframe(
+        # Display dataframe
+        st.dataframe(
             display_df,
             use_container_width=True,
-            hide_index=True,
-            selection_mode="single-row"
+            hide_index=True
         )
         
-        # Delete functionality
-        if st.button("🗑️ Delete Selected", type="secondary"):
-            if hasattr(selected_rows, 'selection') and selected_rows.selection.rows:
-                selected_idx = selected_rows.selection.rows[0]
+        # Delete functionality with selectbox
+        if len(filtered_df) > 0:
+            st.subheader("🗑️ Delete Expense")
+            expense_options = []
+            for idx, row in filtered_df.iterrows():
+                expense_options.append(f"{row['merchant']} - {row['date']} - {row['total']:.2f} {row['currency']}")
+            
+            selected_expense = st.selectbox(
+                "Select expense to delete:",
+                options=["None"] + expense_options,
+                key="delete_expense_selector"
+            )
+            
+            if selected_expense != "None":
+                selected_idx = expense_options.index(selected_expense)
                 expense_id = filtered_df.iloc[selected_idx]['id']
-                if delete_expense(expense_id):
-                    st.success("Expense deleted successfully!")
-                    st.rerun()
-                else:
-                    st.error("Failed to delete expense")
-            else:
-                st.warning("Please select an expense to delete")
+                
+                if st.button("🗑️ Confirm Delete", type="secondary"):
+                    if delete_expense(expense_id):
+                        st.success("Expense deleted successfully!")
+                        st.rerun()
+                    else:
+                        st.error("Failed to delete expense")
     else:
         st.info("No expenses found matching the selected filters")
 else:

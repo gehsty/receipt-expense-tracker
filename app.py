@@ -296,61 +296,56 @@ with col1:
 with col2:
     st.header("✏️ Expense Details")
     
-    # Form for editing/entering expense data
-    with st.form("expense_form", clear_on_submit=True):
+    # Simple form without st.form wrapper to avoid JavaScript issues
+    try:
         # Pre-populate with extracted data if available
-        default_data = st.session_state.extracted_data if st.session_state.processing_complete else {}
+        default_data = st.session_state.get('extracted_data', {}) if st.session_state.get('processing_complete', False) else {}
         
         merchant = st.text_input(
             "Merchant",
             value=default_data.get('merchant', ''),
-            placeholder="Store or restaurant name"
+            placeholder="Store or restaurant name",
+            key="merchant_input"
         )
         
         expense_date = st.date_input(
             "Date",
-            value=datetime.strptime(default_data.get('date', str(date.today())), '%Y-%m-%d').date() 
-                  if default_data.get('date') else date.today()
+            value=date.today(),
+            key="date_input"
         )
         
         total = st.number_input(
             "Total Amount",
             min_value=0.0,
-            value=float(default_data.get('total', 0.0)),
+            value=0.0,
             step=0.01,
-            format="%.2f"
+            format="%.2f",
+            key="total_input"
         )
         
         currency = st.selectbox(
             "Currency",
             ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'],
-            index=0 if not default_data.get('currency') else (
-                ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF'].index(default_data.get('currency'))
-                if default_data.get('currency') in ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF']
-                else 0
-            )
+            index=0,
+            key="currency_input"
         )
-        
-        categories = ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other']
-        default_category = default_data.get('category', 'Other')
-        category_index = categories.index(default_category) if default_category in categories else 6
         
         category = st.selectbox(
             "Category",
-            categories,
-            index=category_index
+            ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other'],
+            index=6,
+            key="category_input"
         )
         
         description = st.text_area(
             "Description",
-            value=default_data.get('description', ''),
-            placeholder="Descriptive summary of the expense (e.g., 'Evening meal at Restaurant Name')"
+            value="",
+            placeholder="Descriptive summary of the expense (e.g., 'Evening meal at Restaurant Name')",
+            key="description_input"
         )
         
         # Submit button
-        submitted = st.form_submit_button("💾 Save Expense", type="primary")
-        
-        if submitted:
+        if st.button("💾 Save Expense", type="primary", key="save_button"):
             if merchant and total > 0:
                 expense_data = {
                     'merchant': merchant,
@@ -375,14 +370,14 @@ with col2:
                 
                 if success:
                     st.success(message)
-                    # Reset processing state
-                    st.session_state.processing_complete = False
-                    st.session_state.extracted_data = {}
                     st.rerun()
                 else:
                     st.error(message)
             else:
                 st.error("Please fill in merchant name and amount")
+    except Exception as e:
+        st.error(f"Form error: {str(e)}")
+        st.info("Try refreshing the page if the error persists.")
 
 # Expense table
 st.header("📋 Expense History")

@@ -130,6 +130,64 @@ def render_expense_form():
 
     form_data = {}
 
+    # Add custom CSS for better styling
+    st.markdown("""
+    <style>
+    .field-container {
+        margin-bottom: 1rem;
+    }
+    .remove-btn {
+        margin-top: 1.5rem;
+        height: 2.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .stButton > button {
+        height: 2.5rem !important;
+        padding: 0 0.75rem !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        border-radius: 0.375rem !important;
+        border: 1px solid #d1d5db !important;
+    }
+    .stButton > button[kind="secondary"] {
+        background-color: #f3f4f6 !important;
+        color: #6b7280 !important;
+        border: 1px solid #d1d5db !important;
+    }
+    .stButton > button[kind="secondary"]:hover {
+        background-color: #e5e7eb !important;
+        color: #374151 !important;
+    }
+    .add-field-section {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #e5e7eb;
+    }
+    .stContainer > div {
+        gap: 0.5rem;
+    }
+    /* Ensure consistent input heights */
+    .stTextInput > div > div > input,
+    .stSelectbox > div > div > div,
+    .stDateInput > div > div > input,
+    .stNumberInput > div > div > input {
+        height: 2.5rem !important;
+    }
+    /* Better spacing for form elements */
+    .element-container {
+        margin-bottom: 1rem !important;
+    }
+    /* Align remove buttons properly */
+    div[data-testid="column"]:nth-child(2) {
+        display: flex;
+        align-items: flex-end;
+        padding-bottom: 0.5rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     # Render default fields
     for field_config in st.session_state.field_config['default_fields']:
         if field_config['active']:
@@ -141,13 +199,14 @@ def render_expense_form():
             if is_required:
                 label += " *"
 
-            # Create columns for optional fields to add remove button
+            # Create container for better alignment
             if not is_required:
-                col1, col2 = st.columns([10, 1])
+                col1, col2 = st.columns([9, 1])
                 with col1:
                     form_data[field_name] = render_field_input(field_name, field_type, label, default_data)
                 with col2:
-                    if st.button("×", key=f"remove_default_{field_name}", help=f"Remove {label}"):
+                    st.write("")  # Add space to align with input field
+                    if st.button("×", key=f"remove_default_{field_name}", help=f"Remove {label}", type="secondary"):
                         toggle_default_field(field_name)
                         st.rerun()
             else:
@@ -155,7 +214,7 @@ def render_expense_form():
 
     # Render custom fields
     for field_name in st.session_state.field_config['custom_fields']:
-        col1, col2 = st.columns([10, 1])
+        col1, col2 = st.columns([9, 1])
         with col1:
             form_data[field_name] = st.text_input(
                 field_name,
@@ -163,21 +222,26 @@ def render_expense_form():
                 key=f"custom_{field_name}_input"
             )
         with col2:
-            if st.button("×", key=f"remove_custom_{field_name}", help=f"Remove {field_name}"):
+            st.write("")  # Add space to align with input field
+            if st.button("×", key=f"remove_custom_{field_name}", help=f"Remove {field_name}", type="secondary"):
                 remove_custom_field(field_name)
                 st.rerun()
 
     # Add new field section
-    st.markdown("─" * 40)
+    st.markdown('<div class="add-field-section">', unsafe_allow_html=True)
+
     col1, col2 = st.columns([3, 1])
     with col1:
         new_field_name = st.text_input("Add Field:", placeholder="e.g., City of Purchase", key="new_field_input")
     with col2:
-        if st.button("+ Add", disabled=not new_field_name or new_field_name.strip() == ""):
+        st.write("")  # Add space to align with input field
+        if st.button("+ Add", disabled=not new_field_name or new_field_name.strip() == "", type="primary"):
             if add_custom_field(new_field_name.strip()):
                 st.rerun()
             else:
                 st.error("Field already exists or invalid name")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     return form_data
 
@@ -551,8 +615,9 @@ with col2:
         # Render dynamic form
         form_data = render_expense_form()
 
-        # Submit button
-        if st.button("💾 Save Expense", type="primary", key="save_button"):
+        # Submit button with spacing
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("💾 Save Expense", type="primary", key="save_button", use_container_width=True):
             # Validate required fields
             required_fields = [f['name'] for f in st.session_state.field_config['default_fields'] if f['required'] and f['active']]
             missing_fields = []

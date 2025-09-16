@@ -860,8 +860,8 @@ if not expenses_df.empty:
             display_df['amount'] = display_df.apply(
                 lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
             )
-            # Remove separate total and currency columns, keep amount
-            columns_to_show = [col for col in display_df.columns if col not in ['total', 'currency']]
+            # Remove separate total and currency columns, and amount (we'll add it back in the right position)
+            columns_to_show = [col for col in display_df.columns if col not in ['total', 'currency', 'amount']]
             # Find position to insert amount (after date column)
             date_pos = next((i for i, col in enumerate(columns_to_show) if col == 'date'), -1)
             if date_pos >= 0:

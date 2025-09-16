@@ -25,6 +25,227 @@ if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
 if 'extracted_data' not in st.session_state:
     st.session_state.extracted_data = {}
+if 'field_config' not in st.session_state:
+    st.session_state.field_config = {
+        'default_fields': [
+            {'name': 'merchant', 'type': 'text', 'required': True, 'active': True},
+            {'name': 'date', 'type': 'date', 'required': True, 'active': True},
+            {'name': 'total', 'type': 'number', 'required': True, 'active': True},
+            {'name': 'currency', 'type': 'dropdown', 'required': False, 'active': True},
+            {'name': 'category', 'type': 'dropdown', 'required': False, 'active': True},
+            {'name': 'description', 'type': 'textarea', 'required': False, 'active': True}
+        ],
+        'custom_fields': []
+    }
+
+def get_active_fields():
+    """Get list of all active field names"""
+    active = []
+    for field in st.session_state.field_config['default_fields']:
+        if field['active']:
+            active.append(field['name'])
+    active.extend(st.session_state.field_config['custom_fields'])
+    return active
+
+def toggle_default_field(field_name):
+    """Toggle a default field on/off"""
+    for field in st.session_state.field_config['default_fields']:
+        if field['name'] == field_name and not field['required']:
+            field['active'] = not field['active']
+            break
+
+def add_custom_field(field_name):
+    """Add a new custom field"""
+    if field_name and field_name not in st.session_state.field_config['custom_fields']:
+        # Check if it conflicts with default field names
+        default_names = [f['name'] for f in st.session_state.field_config['default_fields']]
+        if field_name.lower() not in default_names:
+            st.session_state.field_config['custom_fields'].append(field_name)
+            return True
+    return False
+
+def remove_custom_field(field_name):
+    """Remove a custom field"""
+    if field_name in st.session_state.field_config['custom_fields']:
+        st.session_state.field_config['custom_fields'].remove(field_name)
+
+def generate_dynamic_prompt():
+    """Generate LLM prompt based on active fields"""
+    base_prompt = """
+        Analyze this receipt image and extract the following information in JSON format:
+        {"""
+
+    # Add default fields that are active
+    field_descriptions = {}
+    for field in st.session_state.field_config['default_fields']:
+        if field['active']:
+            if field['name'] == 'merchant':
+                field_descriptions['merchant'] = "store/restaurant name"
+            elif field['name'] == 'date':
+                field_descriptions['date'] = "YYYY-MM-DD format"
+            elif field['name'] == 'total':
+                field_descriptions['total'] = "numerical value only (e.g., 25.99)"
+            elif field['name'] == 'currency':
+                field_descriptions['currency'] = "three-letter currency code (e.g., USD, GBP, EUR, DKK)"
+            elif field['name'] == 'category':
+                field_descriptions['category'] = "one of: Food & Dining, Transportation, Shopping, Entertainment, Healthcare, Utilities, Other"
+            elif field['name'] == 'description':
+                field_descriptions['description'] = "descriptive summary of the expense"
+
+    # Add custom fields
+    for field_name in st.session_state.field_config['custom_fields']:
+        field_descriptions[field_name] = f"extract {field_name} if visible on receipt, otherwise leave empty"
+
+    # Build JSON structure
+    json_fields = []
+    for field_name, description in field_descriptions.items():
+        json_fields.append(f'            "{field_name}": "{description}"')
+
+    base_prompt += "\n" + ",\n".join(json_fields) + """
+        }
+
+        Instructions:
+        - For merchant, extract the business name clearly shown on the receipt
+        - For date, convert to YYYY-MM-DD format
+        - For total, extract the final amount paid (not subtotal)
+        - For currency, identify the currency from symbols (£=GBP, €=EUR, $=USD, kr=DKK, etc.) or text
+        - For category, choose the most appropriate category based on the merchant/items
+        - For description, create a natural summary like:
+          * "Evening meal at [restaurant name]" for restaurants
+          * "Stay at [hotel name] for [X] nights" for hotels
+          * "Grocery shopping at [store name]" for supermarkets
+          * "Fuel purchase at [station name]" for gas stations
+          * "Flight ticket from [origin] to [destination]" for airlines
+          * "Taxi ride in [city]" for transportation
+        - For custom fields, extract the information if clearly visible on the receipt
+        - Return only valid JSON, no additional text
+        """
+
+    return base_prompt
+
+def render_expense_form():
+    """Render the dynamic expense form based on field configuration"""
+    # Pre-populate with extracted data if available
+    default_data = st.session_state.get('extracted_data', {}) if st.session_state.get('processing_complete', False) else {}
+
+    form_data = {}
+
+    # Render default fields
+    for field_config in st.session_state.field_config['default_fields']:
+        if field_config['active']:
+            field_name = field_config['name']
+            field_type = field_config['type']
+            is_required = field_config['required']
+
+            label = field_name.replace('_', ' ').title()
+            if is_required:
+                label += " *"
+
+            # Create columns for optional fields to add remove button
+            if not is_required:
+                col1, col2 = st.columns([10, 1])
+                with col1:
+                    form_data[field_name] = render_field_input(field_name, field_type, label, default_data)
+                with col2:
+                    if st.button("×", key=f"remove_default_{field_name}", help=f"Remove {label}"):
+                        toggle_default_field(field_name)
+                        st.rerun()
+            else:
+                form_data[field_name] = render_field_input(field_name, field_type, label, default_data)
+
+    # Render custom fields
+    for field_name in st.session_state.field_config['custom_fields']:
+        col1, col2 = st.columns([10, 1])
+        with col1:
+            form_data[field_name] = st.text_input(
+                field_name,
+                value=default_data.get(field_name, ''),
+                key=f"custom_{field_name}_input"
+            )
+        with col2:
+            if st.button("×", key=f"remove_custom_{field_name}", help=f"Remove {field_name}"):
+                remove_custom_field(field_name)
+                st.rerun()
+
+    # Add new field section
+    st.markdown("─" * 40)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        new_field_name = st.text_input("Add Field:", placeholder="e.g., City of Purchase", key="new_field_input")
+    with col2:
+        if st.button("+ Add", disabled=not new_field_name or new_field_name.strip() == ""):
+            if add_custom_field(new_field_name.strip()):
+                st.rerun()
+            else:
+                st.error("Field already exists or invalid name")
+
+    return form_data
+
+def render_field_input(field_name, field_type, label, default_data):
+    """Render appropriate input widget based on field type"""
+    if field_type == 'text':
+        return st.text_input(
+            label,
+            value=default_data.get(field_name, ''),
+            placeholder=f"Enter {field_name.replace('_', ' ')}",
+            key=f"{field_name}_input"
+        )
+    elif field_type == 'date':
+        default_date = date.today()
+        if default_data.get(field_name):
+            try:
+                default_date = datetime.strptime(default_data.get(field_name), '%Y-%m-%d').date()
+            except:
+                default_date = date.today()
+        return st.date_input(
+            label,
+            value=default_date,
+            key=f"{field_name}_input"
+        )
+    elif field_type == 'number':
+        return st.number_input(
+            label,
+            min_value=0.0,
+            value=float(default_data.get(field_name, 0.0)),
+            step=0.01,
+            format="%.2f",
+            key=f"{field_name}_input"
+        )
+    elif field_type == 'dropdown':
+        if field_name == 'currency':
+            options = ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF']
+            default_index = 0
+            if default_data.get(field_name) and default_data.get(field_name) in options:
+                default_index = options.index(default_data.get(field_name))
+        elif field_name == 'category':
+            options = ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other']
+            default_index = 6  # Default to "Other"
+            if default_data.get(field_name) and default_data.get(field_name) in options:
+                default_index = options.index(default_data.get(field_name))
+        else:
+            options = ['Option 1', 'Option 2', 'Option 3']
+            default_index = 0
+
+        return st.selectbox(
+            label,
+            options,
+            index=default_index,
+            key=f"{field_name}_input"
+        )
+    elif field_type == 'textarea':
+        return st.text_area(
+            label,
+            value=default_data.get(field_name, ''),
+            placeholder=f"Enter {field_name.replace('_', ' ')}",
+            key=f"{field_name}_input"
+        )
+    else:
+        # Default to text input
+        return st.text_input(
+            label,
+            value=default_data.get(field_name, ''),
+            key=f"{field_name}_input"
+        )
 
 def init_database():
     """Initialize SQLite database"""
@@ -46,6 +267,7 @@ def init_database():
                 currency TEXT DEFAULT 'USD',
                 category TEXT,
                 description TEXT,
+                custom_fields JSON,
                 receipt_image BLOB,
                 receipt_filename TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -59,6 +281,8 @@ def init_database():
             cursor.execute('ALTER TABLE expenses ADD COLUMN description TEXT')
         if 'receipt_image' not in columns:
             cursor.execute('ALTER TABLE expenses ADD COLUMN receipt_image BLOB')
+        if 'custom_fields' not in columns:
+            cursor.execute('ALTER TABLE expenses ADD COLUMN custom_fields JSON')
         # Rename items to description if items exists
         if 'items' in columns and 'description' not in columns:
             cursor.execute('ALTER TABLE expenses RENAME COLUMN items TO description')
@@ -96,33 +320,8 @@ def process_receipt_with_gemini(image_bytes):
         # Create the model
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        # Create prompt for receipt extraction
-        prompt = """
-        Analyze this receipt image and extract the following information in JSON format:
-        {
-            "merchant": "store/restaurant name",
-            "date": "YYYY-MM-DD format",
-            "total": "numerical value only (e.g., 25.99)",
-            "currency": "three-letter currency code (e.g., USD, GBP, EUR, DKK)",
-            "category": "one of: Food & Dining, Transportation, Shopping, Entertainment, Healthcare, Utilities, Other",
-            "description": "descriptive summary of the expense"
-        }
-        
-        Instructions:
-        - For merchant, extract the business name clearly shown on the receipt
-        - For date, convert to YYYY-MM-DD format
-        - For total, extract the final amount paid (not subtotal)
-        - For currency, identify the currency from symbols (£=GBP, €=EUR, $=USD, kr=DKK, etc.) or text
-        - For category, choose the most appropriate category based on the merchant/items
-        - For description, create a natural summary like:
-          * "Evening meal at [restaurant name]" for restaurants
-          * "Stay at [hotel name] for [X] nights" for hotels
-          * "Grocery shopping at [store name]" for supermarkets
-          * "Fuel purchase at [station name]" for gas stations
-          * "Flight ticket from [origin] to [destination]" for airlines
-          * "Taxi ride in [city]" for transportation
-        - Return only valid JSON, no additional text
-        """
+        # Create dynamic prompt based on active fields
+        prompt = generate_dynamic_prompt()
         
         # Generate response
         response = model.generate_content([prompt, image])
@@ -138,15 +337,35 @@ def process_receipt_with_gemini(image_bytes):
             
             data = json.loads(response_text)
             
-            # Validate and clean data
-            cleaned_data = {
-                'merchant': str(data.get('merchant', '')).strip(),
-                'date': str(data.get('date', str(date.today()))),
-                'total': float(data.get('total', 0.0)),
-                'currency': str(data.get('currency', 'USD')).strip().upper(),
-                'category': str(data.get('category', 'Other')),
-                'description': str(data.get('description', '')).strip()
-            }
+            # Validate and clean data dynamically based on active fields
+            cleaned_data = {}
+            active_fields = get_active_fields()
+
+            for field_name in active_fields:
+                if field_name in data:
+                    if field_name == 'total':
+                        try:
+                            cleaned_data[field_name] = float(data.get(field_name, 0.0))
+                        except:
+                            cleaned_data[field_name] = 0.0
+                    elif field_name == 'currency':
+                        cleaned_data[field_name] = str(data.get(field_name, 'USD')).strip().upper()
+                    elif field_name == 'date':
+                        cleaned_data[field_name] = str(data.get(field_name, str(date.today())))
+                    else:
+                        cleaned_data[field_name] = str(data.get(field_name, '')).strip()
+                else:
+                    # Set default values for missing fields
+                    if field_name == 'total':
+                        cleaned_data[field_name] = 0.0
+                    elif field_name == 'currency':
+                        cleaned_data[field_name] = 'USD'
+                    elif field_name == 'date':
+                        cleaned_data[field_name] = str(date.today())
+                    elif field_name == 'category':
+                        cleaned_data[field_name] = 'Other'
+                    else:
+                        cleaned_data[field_name] = ''
             
             return cleaned_data, None
             
@@ -156,26 +375,30 @@ def process_receipt_with_gemini(image_bytes):
     except Exception as e:
         return None, f"Error processing receipt: {str(e)}"
 
-def save_expense_to_db(expense_data, filename, image_data=None):
-    """Save expense to SQLite database"""
+def save_expense_to_db(expense_data, custom_fields, filename, image_data=None):
+    """Save expense to SQLite database with support for custom fields"""
     try:
         conn = sqlite3.connect('expenses.db')
         cursor = conn.cursor()
-        
+
+        # Convert custom fields to JSON
+        custom_fields_json = json.dumps(custom_fields) if custom_fields else None
+
         cursor.execute('''
-            INSERT INTO expenses (merchant, date, total, currency, category, description, receipt_image, receipt_filename)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO expenses (merchant, date, total, currency, category, description, custom_fields, receipt_image, receipt_filename)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            expense_data['merchant'],
-            expense_data['date'],
-            expense_data['total'],
-            expense_data['currency'],
-            expense_data['category'],
-            expense_data['description'],
+            expense_data.get('merchant', ''),
+            expense_data.get('date', str(date.today())),
+            expense_data.get('total', 0.0),
+            expense_data.get('currency', 'USD'),
+            expense_data.get('category', 'Other'),
+            expense_data.get('description', ''),
+            custom_fields_json,
             image_data,
             filename
         ))
-        
+
         conn.commit()
         conn.close()
         return True, "Expense saved successfully!"
@@ -183,15 +406,42 @@ def save_expense_to_db(expense_data, filename, image_data=None):
         return False, f"Database error: {str(e)}"
 
 def load_expenses_from_db():
-    """Load all expenses from database"""
+    """Load all expenses from database with custom fields support"""
     try:
         conn = sqlite3.connect('expenses.db')
         df = pd.read_sql_query('''
-            SELECT id, merchant, date, total, currency, category, description, receipt_filename, created_at
+            SELECT id, merchant, date, total, currency, category, description, custom_fields, receipt_filename, created_at
             FROM expenses
             ORDER BY date DESC, created_at DESC
         ''', conn)
         conn.close()
+
+        # Parse custom fields and expand into columns
+        if not df.empty and 'custom_fields' in df.columns:
+            # Get all unique custom field names across all records
+            all_custom_fields = set()
+            for idx, row in df.iterrows():
+                if row['custom_fields']:
+                    try:
+                        custom_data = json.loads(row['custom_fields'])
+                        all_custom_fields.update(custom_data.keys())
+                    except json.JSONDecodeError:
+                        pass
+
+            # Add columns for each custom field
+            for field_name in all_custom_fields:
+                df[field_name] = ''
+
+            # Populate custom field columns
+            for idx, row in df.iterrows():
+                if row['custom_fields']:
+                    try:
+                        custom_data = json.loads(row['custom_fields'])
+                        for field_name, value in custom_data.items():
+                            df.at[idx, field_name] = value
+                    except json.JSONDecodeError:
+                        pass
+
         return df
     except Exception as e:
         st.error(f"Error loading expenses: {str(e)}")
@@ -296,105 +546,55 @@ with col1:
 with col2:
     st.header("✏️ Expense Details")
     
-    # Simple form without st.form wrapper to avoid JavaScript issues
+    # Dynamic form based on field configuration
     try:
-        # Pre-populate with extracted data if available
-        default_data = st.session_state.get('extracted_data', {}) if st.session_state.get('processing_complete', False) else {}
-        
-        merchant = st.text_input(
-            "Merchant",
-            value=default_data.get('merchant', ''),
-            placeholder="Store or restaurant name",
-            key="merchant_input"
-        )
-        
-        # Handle date extraction properly
-        default_date = date.today()
-        if default_data.get('date'):
-            try:
-                default_date = datetime.strptime(default_data.get('date'), '%Y-%m-%d').date()
-            except:
-                default_date = date.today()
-                
-        expense_date = st.date_input(
-            "Date",
-            value=default_date,
-            key="date_input"
-        )
-        
-        total = st.number_input(
-            "Total Amount",
-            min_value=0.0,
-            value=float(default_data.get('total', 0.0)),
-            step=0.01,
-            format="%.2f",
-            key="total_input"
-        )
-        
-        # Handle currency extraction properly
-        currencies = ['USD', 'GBP', 'EUR', 'DKK', 'SEK', 'NOK', 'CAD', 'AUD', 'JPY', 'CHF']
-        default_currency_index = 0
-        if default_data.get('currency') and default_data.get('currency') in currencies:
-            default_currency_index = currencies.index(default_data.get('currency'))
-            
-        currency = st.selectbox(
-            "Currency",
-            currencies,
-            index=default_currency_index,
-            key="currency_input"
-        )
-        
-        # Handle category extraction properly
-        categories = ['Food & Dining', 'Transportation', 'Shopping', 'Entertainment', 'Healthcare', 'Utilities', 'Other']
-        default_category_index = 6  # Default to "Other"
-        if default_data.get('category') and default_data.get('category') in categories:
-            default_category_index = categories.index(default_data.get('category'))
-            
-        category = st.selectbox(
-            "Category",
-            categories,
-            index=default_category_index,
-            key="category_input"
-        )
-        
-        description = st.text_area(
-            "Description",
-            value=default_data.get('description', ''),
-            placeholder="Descriptive summary of the expense (e.g., 'Evening meal at Restaurant Name')",
-            key="description_input"
-        )
-        
+        # Render dynamic form
+        form_data = render_expense_form()
+
         # Submit button
         if st.button("💾 Save Expense", type="primary", key="save_button"):
-            if merchant and total > 0:
-                expense_data = {
-                    'merchant': merchant,
-                    'date': str(expense_date),
-                    'total': total,
-                    'currency': currency,
-                    'category': category,
-                    'description': description
-                }
-                
+            # Validate required fields
+            required_fields = [f['name'] for f in st.session_state.field_config['default_fields'] if f['required'] and f['active']]
+            missing_fields = []
+
+            for field in required_fields:
+                if not form_data.get(field) or form_data.get(field) == "" or (field == 'total' and form_data.get(field) <= 0):
+                    missing_fields.append(field)
+
+            if missing_fields:
+                st.error(f"Please fill in required fields: {', '.join(missing_fields)}")
+            else:
+                # Prepare expense data
+                expense_data = {}
+                custom_fields = {}
+
+                # Separate default and custom fields
+                default_field_names = [f['name'] for f in st.session_state.field_config['default_fields']]
+
+                for field_name, value in form_data.items():
+                    if field_name in default_field_names:
+                        expense_data[field_name] = value
+                    else:
+                        custom_fields[field_name] = value
+
                 # Convert image to bytes if uploaded
                 image_data = None
                 if uploaded_file:
                     image_data = uploaded_file.getvalue()
-                
+
                 # Save to database
                 success, message = save_expense_to_db(
-                    expense_data, 
+                    expense_data,
+                    custom_fields,
                     uploaded_file.name if uploaded_file else "manual_entry",
                     image_data
                 )
-                
+
                 if success:
                     st.success(message)
                     st.rerun()
                 else:
                     st.error(message)
-            else:
-                st.error("Please fill in merchant name and amount")
     except Exception as e:
         st.error(f"Form error: {str(e)}")
         st.info("Try refreshing the page if the error persists.")
@@ -429,14 +629,26 @@ if not expenses_df.empty:
         with col3:
             st.metric("Average Amount", f"${filtered_df['total'].mean():.2f}")
         
-        # Display table
-        display_df = filtered_df[['merchant', 'date', 'total', 'currency', 'category', 'description']].copy()
-        # Format the total with currency
-        display_df['amount'] = display_df.apply(
-            lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
-        )
-        # Select columns for display
-        display_df = display_df[['merchant', 'date', 'amount', 'category', 'description']]
+        # Display table with dynamic columns
+        base_columns = ['merchant', 'date', 'total', 'currency', 'category', 'description']
+
+        # Get all columns that exist in the dataframe (including custom fields)
+        available_columns = [col for col in base_columns if col in filtered_df.columns]
+        custom_columns = [col for col in filtered_df.columns if col not in base_columns and col not in ['id', 'custom_fields', 'receipt_filename', 'created_at']]
+
+        # Create display dataframe
+        all_display_columns = available_columns + custom_columns
+        display_df = filtered_df[all_display_columns].copy()
+
+        # Format the total with currency if both exist
+        if 'total' in display_df.columns and 'currency' in display_df.columns:
+            display_df['amount'] = display_df.apply(
+                lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
+            )
+            # Remove separate total and currency columns, keep amount
+            columns_to_show = [col for col in all_display_columns if col not in ['total', 'currency']]
+            columns_to_show.insert(2, 'amount')  # Insert amount after date
+            display_df = display_df[columns_to_show]
         
         # Display dataframe
         st.dataframe(

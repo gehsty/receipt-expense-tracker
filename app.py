@@ -851,6 +851,12 @@ if not expenses_df.empty:
 
         # Format the total with currency if both exist
         if 'total' in display_df.columns and 'currency' in display_df.columns:
+            # Check if 'amount' column already exists (from custom fields)
+            if 'amount' in display_df.columns:
+                # Rename the existing amount column to avoid conflicts
+                display_df = display_df.rename(columns={'amount': 'custom_amount'})
+
+            # Create the formatted amount column
             display_df['amount'] = display_df.apply(
                 lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
             )

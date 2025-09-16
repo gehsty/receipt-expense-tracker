@@ -9,6 +9,11 @@ from datetime import datetime, date
 import json
 import traceback
 import base64
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
 
 # Configure the page
 st.set_page_config(
@@ -325,6 +330,7 @@ def init_database():
         cursor.execute('''
             CREATE TABLE expenses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seq_number INTEGER,
                 merchant TEXT,
                 date DATE,
                 total REAL,
@@ -347,6 +353,18 @@ def init_database():
             cursor.execute('ALTER TABLE expenses ADD COLUMN receipt_image BLOB')
         if 'custom_fields' not in columns:
             cursor.execute('ALTER TABLE expenses ADD COLUMN custom_fields JSON')
+        if 'seq_number' not in columns:
+            cursor.execute('ALTER TABLE expenses ADD COLUMN seq_number INTEGER')
+            # Assign sequential numbers to existing expenses based on creation order
+            cursor.execute('''
+                UPDATE expenses
+                SET seq_number = (
+                    SELECT COUNT(*)
+                    FROM expenses e2
+                    WHERE e2.created_at < expenses.created_at
+                       OR (e2.created_at = expenses.created_at AND e2.id <= expenses.id)
+                )
+            ''')
         # Rename items to description if items exists
         if 'items' in columns and 'description' not in columns:
             cursor.execute('ALTER TABLE expenses RENAME COLUMN items TO description')
@@ -440,18 +458,23 @@ def process_receipt_with_gemini(image_bytes):
         return None, f"Error processing receipt: {str(e)}"
 
 def save_expense_to_db(expense_data, custom_fields, filename, image_data=None):
-    """Save expense to SQLite database with support for custom fields"""
+    """Save expense to SQLite database with support for custom fields and sequential numbering"""
     try:
         conn = sqlite3.connect('expenses.db')
         cursor = conn.cursor()
+
+        # Get the next sequential number
+        cursor.execute('SELECT COALESCE(MAX(seq_number), 0) + 1 FROM expenses')
+        next_seq_number = cursor.fetchone()[0]
 
         # Convert custom fields to JSON
         custom_fields_json = json.dumps(custom_fields) if custom_fields else None
 
         cursor.execute('''
-            INSERT INTO expenses (merchant, date, total, currency, category, description, custom_fields, receipt_image, receipt_filename)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO expenses (seq_number, merchant, date, total, currency, category, description, custom_fields, receipt_image, receipt_filename)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
+            next_seq_number,
             expense_data.get('merchant', ''),
             expense_data.get('date', str(date.today())),
             expense_data.get('total', 0.0),
@@ -470,11 +493,11 @@ def save_expense_to_db(expense_data, custom_fields, filename, image_data=None):
         return False, f"Database error: {str(e)}"
 
 def load_expenses_from_db():
-    """Load all expenses from database with custom fields support"""
+    """Load all expenses from database with custom fields support and sequential numbers"""
     try:
         conn = sqlite3.connect('expenses.db')
         df = pd.read_sql_query('''
-            SELECT id, merchant, date, total, currency, category, description, custom_fields, receipt_filename, created_at
+            SELECT id, seq_number, merchant, date, total, currency, category, description, custom_fields, receipt_filename, created_at
             FROM expenses
             ORDER BY date DESC, created_at DESC
         ''', conn)
@@ -523,6 +546,123 @@ def delete_expense(expense_id):
     except Exception as e:
         st.error(f"Error deleting expense: {str(e)}")
         return False
+
+def generate_pdf_report():
+    """Generate PDF report with all expenses that have receipt images"""
+    try:
+        # Get expenses with receipt images
+        conn = sqlite3.connect('expenses.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT seq_number, merchant, date, total, currency, category, description, custom_fields, receipt_image, receipt_filename
+            FROM expenses
+            WHERE receipt_image IS NOT NULL
+            ORDER BY seq_number ASC
+        ''')
+        expenses_with_receipts = cursor.fetchall()
+        conn.close()
+
+        if not expenses_with_receipts:
+            return None, "No expenses with receipt images found"
+
+        # Create PDF buffer
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        story = []
+
+        # Get styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=36,
+            textColor=colors.darkblue,
+            spaceAfter=20,
+            alignment=1  # Center alignment
+        )
+
+        subtitle_style = ParagraphStyle(
+            'CustomSubtitle',
+            parent=styles['Normal'],
+            fontSize=14,
+            spaceAfter=20,
+            alignment=1  # Center alignment
+        )
+
+        for expense in expenses_with_receipts:
+            seq_number, merchant, exp_date, total, currency, category, description, custom_fields_json, receipt_image, filename = expense
+
+            # Add expense number as large title
+            story.append(Paragraph(f"Expense #{seq_number}", title_style))
+
+            # Add expense details
+            details = f"<b>Merchant:</b> {merchant}<br/>"
+            details += f"<b>Date:</b> {exp_date}<br/>"
+            details += f"<b>Amount:</b> {total:.2f} {currency}<br/>"
+            details += f"<b>Category:</b> {category}<br/>"
+            if description:
+                details += f"<b>Description:</b> {description}<br/>"
+
+            # Add custom fields if they exist
+            if custom_fields_json:
+                try:
+                    custom_data = json.loads(custom_fields_json)
+                    for field_name, value in custom_data.items():
+                        if value:  # Only show non-empty custom fields
+                            details += f"<b>{field_name}:</b> {value}<br/>"
+                except json.JSONDecodeError:
+                    pass
+
+            story.append(Paragraph(details, subtitle_style))
+            story.append(Spacer(1, 20))
+
+            # Add receipt image
+            if receipt_image:
+                try:
+                    # Convert blob to PIL Image
+                    img_data = io.BytesIO(receipt_image)
+                    pil_img = Image.open(img_data)
+
+                    # Calculate size to fit on page while maintaining aspect ratio
+                    page_width = A4[0] - 2*inch  # Account for margins
+                    page_height = A4[1] - 4*inch  # Account for margins and text
+
+                    img_width, img_height = pil_img.size
+                    aspect_ratio = img_width / img_height
+
+                    if aspect_ratio > 1:  # Landscape orientation
+                        new_width = min(page_width, 6*inch)
+                        new_height = new_width / aspect_ratio
+                    else:  # Portrait orientation
+                        new_height = min(page_height, 8*inch)
+                        new_width = new_height * aspect_ratio
+
+                    # Create temporary image buffer for ReportLab
+                    img_buffer = io.BytesIO()
+                    pil_img.save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+
+                    # Add image to PDF
+                    rl_img = RLImage(img_buffer, width=new_width, height=new_height)
+                    story.append(rl_img)
+
+                except Exception as e:
+                    # If image fails, add error message
+                    story.append(Paragraph(f"Error displaying receipt image: {str(e)}", styles['Normal']))
+
+            # Add page break except for last expense
+            if expense != expenses_with_receipts[-1]:
+                story.append(Spacer(1, 20))
+                story.append(Paragraph("<br/><br/>", styles['Normal']))  # Force page break
+
+        # Build PDF
+        doc.build(story)
+        buffer.seek(0)
+
+        return buffer.getvalue(), None
+
+    except Exception as e:
+        return None, f"Error generating PDF: {str(e)}"
 
 # Initialize database
 init_database()
@@ -695,7 +835,7 @@ if not expenses_df.empty:
             st.metric("Average Amount", f"${filtered_df['total'].mean():.2f}")
         
         # Display table with dynamic columns
-        base_columns = ['merchant', 'date', 'total', 'currency', 'category', 'description']
+        base_columns = ['seq_number', 'merchant', 'date', 'total', 'currency', 'category', 'description']
 
         # Get all columns that exist in the dataframe (including custom fields)
         available_columns = [col for col in base_columns if col in filtered_df.columns]
@@ -705,14 +845,23 @@ if not expenses_df.empty:
         all_display_columns = available_columns + custom_columns
         display_df = filtered_df[all_display_columns].copy()
 
+        # Rename seq_number column to "No." for display
+        if 'seq_number' in display_df.columns:
+            display_df = display_df.rename(columns={'seq_number': 'No.'})
+
         # Format the total with currency if both exist
         if 'total' in display_df.columns and 'currency' in display_df.columns:
             display_df['amount'] = display_df.apply(
                 lambda row: f"{row['total']:.2f} {row['currency']}", axis=1
             )
             # Remove separate total and currency columns, keep amount
-            columns_to_show = [col for col in all_display_columns if col not in ['total', 'currency']]
-            columns_to_show.insert(2, 'amount')  # Insert amount after date
+            columns_to_show = [col for col in display_df.columns if col not in ['total', 'currency']]
+            # Find position to insert amount (after date column)
+            date_pos = next((i for i, col in enumerate(columns_to_show) if col == 'date'), -1)
+            if date_pos >= 0:
+                columns_to_show.insert(date_pos + 1, 'amount')
+            else:
+                columns_to_show.append('amount')
             display_df = display_df[columns_to_show]
         
         # Display dataframe
@@ -721,7 +870,39 @@ if not expenses_df.empty:
             use_container_width=True,
             hide_index=True
         )
-        
+
+        # PDF Download functionality
+        # Check if there are expenses with receipt images
+        expenses_with_images = expenses_df[expenses_df['receipt_filename'].notna() & (expenses_df['receipt_filename'] != '')]
+        if not expenses_with_images.empty:
+            st.markdown("---")
+            st.subheader("📄 Export Report")
+
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("📄 Generate PDF Report", type="primary"):
+                    with st.spinner("Generating PDF report..."):
+                        pdf_data, error = generate_pdf_report()
+
+                        if error:
+                            st.error(error)
+                        else:
+                            # Create download button
+                            current_date = datetime.now().strftime("%Y_%m_%d")
+                            filename = f"expense_report_{current_date}.pdf"
+
+                            st.download_button(
+                                label="⬇️ Download PDF Report",
+                                data=pdf_data,
+                                file_name=filename,
+                                mime="application/pdf",
+                                type="primary"
+                            )
+                            st.success(f"PDF report generated successfully! ({len(expenses_with_images)} expenses included)")
+
+            with col2:
+                st.info(f"📊 Report will include {len(expenses_with_images)} expense(s) with receipt images")
+
         # Delete functionality with selectbox
         if len(filtered_df) > 0:
             st.subheader("🗑️ Delete Expense")
